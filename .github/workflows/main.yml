@@ -27,6 +27,9 @@ jobs:
 
       - name: Initialize & Configure Android Project
         run: |
+          mkdir -p lib
+          mv -f *.dart lib/ 2>/dev/null || true
+
           if [ ! -d "android" ]; then
             flutter create . --platforms=android --org com.aihub.client
           fi
