@@ -31,35 +31,77 @@ jobs:
             flutter create . --platforms=android --org com.aihub.client
           fi
 
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-          PERMS=(
-            "android.permission.INTERNET"
-            "android.permission.RECORD_AUDIO"
-            "android.permission.USE_BIOMETRIC"
-            "android.permission.USE_FINGERPRINT"
-            "android.permission.SYSTEM_ALERT_WINDOW"
-            "android.permission.FOREGROUND_SERVICE"
-            "android.permission.READ_MEDIA_IMAGES"
-            "android.permission.READ_MEDIA_VIDEO"
-            "android.permission.READ_MEDIA_AUDIO"
-            "android.permission.READ_EXTERNAL_STORAGE"
-            "android.permission.WRITE_EXTERNAL_STORAGE"
+          python3 - << 'PYEOF'
+          import os, glob, re
+
+          # 1. Cleanly update AndroidManifest.xml
+          manifest_path = "android/app/src/main/AndroidManifest.xml"
+          with open(manifest_path, "r", encoding="utf-8") as f:
+              manifest = f.read()
+
+          perms = [
+              "android.permission.INTERNET",
+              "android.permission.RECORD_AUDIO",
+              "android.permission.USE_BIOMETRIC",
+              "android.permission.USE_FINGERPRINT",
+              "android.permission.SYSTEM_ALERT_WINDOW",
+              "android.permission.FOREGROUND_SERVICE",
+              "android.permission.READ_MEDIA_IMAGES",
+              "android.permission.READ_MEDIA_VIDEO",
+              "android.permission.READ_MEDIA_AUDIO",
+              "android.permission.READ_EXTERNAL_STORAGE",
+              "android.permission.WRITE_EXTERNAL_STORAGE",
+          ]
+          perm_tags = "\n    ".join(
+              f'<uses-permission android:name="{p}"/>' for p in perms if p not in manifest
           )
-          for perm in "${PERMS[@]}"; do
-            if ! grep -q "$perm" "$MANIFEST"; then
-              sed -i "s|<application|<uses-permission android:name=\\"$perm\\"/>\\n    <application|" "$MANIFEST"
-            fi
-          done
+          if perm_tags:
+              manifest = manifest.replace("<application", f"{perm_tags}\n    <application", 1)
 
-          if ! grep -q "android.intent.action.SEND" "$MANIFEST"; then
-            sed -i 's|</activity>|    <intent-filter>\\n                <action android:name="android.intent.action.SEND" />\\n                <category android:name="android.intent.category.DEFAULT" />\\n                <data android:mimeType="text/plain" />\\n            </intent-filter>\\n            <intent-filter>\\n                <action android:name="android.intent.action.SEND" />\\n                <category android:name="android.intent.category.DEFAULT" />\\n                <data android:mimeType="image/*" />\\n            </intent-filter>\\n        </activity>\\n        <service android:name=".AIQuickTileService" android:label="AI Voice / OCR" android:icon="@mipmap/ic_launcher" android:permission="android.permission.BIND_QUICK_SETTINGS_TILE" android:exported="true">\\n            <intent-filter>\\n                <action android:name="android.service.quicksettings.action.QS_TILE" />\\n            </intent-filter>\\n        </service>\\n        <service android:name=".FloatingBubbleService" android:exported="false" />\\n        <receiver android:name=".AIHomeWidgetProvider" android:exported="true">\\n            <intent-filter>\\n                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />\\n            </intent-filter>\\n            <meta-data android:name="android.appwidget.provider" android:resource="@xml/ai_widget_info" />\\n        </receiver>|' "$MANIFEST"
-          fi
+          extra_components = """
+              <intent-filter>
+                  <action android:name="android.intent.action.SEND" />
+                  <category android:name="android.intent.category.DEFAULT" />
+                  <data android:mimeType="text/plain" />
+              </intent-filter>
+              <intent-filter>
+                  <action android:name="android.intent.action.SEND" />
+                  <category android:name="android.intent.category.DEFAULT" />
+                  <data android:mimeType="image/*" />
+              </intent-filter>
+          </activity>
+          <service
+              android:name=".AIQuickTileService"
+              android:label="AI Voice / OCR"
+              android:icon="@mipmap/ic_launcher"
+              android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+              android:exported="true">
+              <intent-filter>
+                  <action android:name="android.service.quicksettings.action.QS_TILE" />
+              </intent-filter>
+          </service>
+          <service android:name=".FloatingBubbleService" android:exported="false" />
+          <receiver android:name=".AIHomeWidgetProvider" android:exported="true">
+              <intent-filter>
+                  <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+              </intent-filter>
+              <meta-data
+                  android:name="android.appwidget.provider"
+                  android:resource="@xml/ai_widget_info" />
+          </receiver>"""
 
-          mkdir -p android/app/src/main/res/xml
-          mkdir -p android/app/src/main/res/layout
+          if "android.intent.action.SEND" not in manifest:
+              manifest = manifest.replace("</activity>", extra_components, 1)
 
-          sed 's/^          //' << 'EOF' > android/app/src/main/res/xml/ai_widget_info.xml
-          <?xml version="1.0" encoding="utf-8"?>
+          with open(manifest_path, "w", encoding="utf-8") as f:
+              f.write(manifest)
+
+          # 2. Create Widget XML resources
+          os.makedirs("android/app/src/main/res/xml", exist_ok=True)
+          os.makedirs("android/app/src/main/res/layout", exist_ok=True)
+
+          with open("android/app/src/main/res/xml/ai_widget_info.xml", "w", encoding="utf-8") as f:
+              f.write('''<?xml version="1.0" encoding="utf-8"?>
           <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
               android:minWidth="180dp"
               android:minHeight="50dp"
@@ -67,10 +109,10 @@ jobs:
               android:initialLayout="@layout/ai_widget_layout"
               android:resizeMode="horizontal|vertical"
               android:widgetCategory="home_screen" />
-          EOF
+          ''')
 
-          sed 's/^          //' << 'EOF' > android/app/src/main/res/layout/ai_widget_layout.xml
-          <?xml version="1.0" encoding="utf-8"?>
+          with open("android/app/src/main/res/layout/ai_widget_layout.xml", "w", encoding="utf-8") as f:
+              f.write('''<?xml version="1.0" encoding="utf-8"?>
           <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
               android:id="@+id/widget_root"
               android:layout_width="match_parent"
@@ -102,24 +144,29 @@ jobs:
                   android:textStyle="bold"
                   android:textSize="14sp" />
           </LinearLayout>
-          EOF
+          ''')
 
-          if [ -f "android/app/build.gradle" ]; then
-            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/g' android/app/build.gradle
-            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' android/app/build.gradle
-          fi
-          if [ -f "android/app/build.gradle.kts" ]; then
-            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/g' android/app/build.gradle.kts
-          fi
+          # 3. Set minSdkVersion to 24
+          for gradle_file in ["android/app/build.gradle", "android/app/build.gradle.kts"]:
+              if os.path.exists(gradle_file):
+                  with open(gradle_file, "r", encoding="utf-8") as f:
+                      g = f.read()
+                  g = re.sub(r'minSdk\s*=\s*flutter\.minSdkVersion', 'minSdk = 24', g)
+                  g = re.sub(r'minSdkVersion\s+flutter\.minSdkVersion', 'minSdkVersion 24', g)
+                  with open(gradle_file, "w", encoding="utf-8") as f:
+                      f.write(g)
 
-          MAIN_ACT=$(find android/app/src/main/kotlin -name "MainActivity.kt" | head -n 1)
-          if [ -n "$MAIN_ACT" ]; then
-            PKG_LINE=$(head -n 1 "$MAIN_ACT")
+          # 4. Write Kotlin Native Services
+          kt_files = glob.glob("android/app/src/main/kotlin/**/MainActivity.kt", recursive=True)
+          if kt_files:
+              main_act = kt_files[0]
+              with open(main_act, "r", encoding="utf-8") as f:
+                  pkg_line = f.readline().strip()
 
-            sed 's/^          //' << 'EOF' > "$MAIN_ACT"
-          __PKG_LINE__
+              kotlin_code = pkg_line + '''
 
           import android.app.PendingIntent
+          import android.app.Service
           import android.appwidget.AppWidgetManager
           import android.appwidget.AppWidgetProvider
           import android.content.Context
@@ -129,6 +176,7 @@ jobs:
           import android.net.Uri
           import android.os.Build
           import android.os.Bundle
+          import android.os.IBinder
           import android.provider.Settings
           import android.service.quicksettings.TileService
           import android.view.Gravity
@@ -136,8 +184,6 @@ jobs:
           import android.view.WindowManager
           import android.widget.RemoteViews
           import android.widget.TextView
-          import android.app.Service
-          import android.os.IBinder
           import io.flutter.embedding.android.FlutterFragmentActivity
           import io.flutter.embedding.engine.FlutterEngine
           import io.flutter.plugin.common.MethodChannel
@@ -348,9 +394,10 @@ jobs:
                   }
               }
           }
-          EOF
-            sed -i "s|__PKG_LINE__|$PKG_LINE|g" "$MAIN_ACT"
-          fi
+          '''
+              with open(main_act, "w", encoding="utf-8") as f:
+                  f.write("\n".join(line[10:] if line.startswith("          ") else line for line in kotlin_code.splitlines()))
+          PYEOF
 
       - name: Get dependencies
         run: flutter pub get
