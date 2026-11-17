@@ -37,6 +37,44 @@ jobs:
           python3 - << 'PYEOF'
           import os, glob, re
 
+          # 0. Repair accidental literal newlines inside single-quoted Dart strings
+          for dart_file in glob.glob("lib/*.dart"):
+              with open(dart_file, "r", encoding="utf-8") as f:
+                  src = f.read()
+              out = []
+              i = 0
+              n = len(src)
+              in_triple = False
+              in_single = False
+              while i < n:
+                  if not in_single and src[i:i+3] == "'''":
+                      in_triple = not in_triple
+                      out.append("'''")
+                      i += 3
+                      continue
+                  if in_triple:
+                      out.append(src[i])
+                      i += 1
+                      continue
+                  ch = src[i]
+                  if ch == "\\" and in_single and i + 1 < n:
+                      out.append(src[i:i+2])
+                      i += 2
+                      continue
+                  if ch == "'":
+                      in_single = not in_single
+                      out.append(ch)
+                      i += 1
+                      continue
+                  if ch == "\n" and in_single:
+                      out.append("\\n")
+                      i += 1
+                      continue
+                  out.append(ch)
+                  i += 1
+              with open(dart_file, "w", encoding="utf-8") as f:
+                  f.write("".join(out))
+
           # 1. Cleanly update AndroidManifest.xml
           manifest_path = "android/app/src/main/AndroidManifest.xml"
           with open(manifest_path, "r", encoding="utf-8") as f:
