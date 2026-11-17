@@ -1,0 +1,364 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Initialize & Configure Android Project
+        run: |
+          if [ ! -d "android" ]; then
+            flutter create . --platforms=android --org com.aihub.client
+          fi
+
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          PERMS=(
+            "android.permission.INTERNET"
+            "android.permission.RECORD_AUDIO"
+            "android.permission.USE_BIOMETRIC"
+            "android.permission.USE_FINGERPRINT"
+            "android.permission.SYSTEM_ALERT_WINDOW"
+            "android.permission.FOREGROUND_SERVICE"
+            "android.permission.READ_MEDIA_IMAGES"
+            "android.permission.READ_MEDIA_VIDEO"
+            "android.permission.READ_MEDIA_AUDIO"
+            "android.permission.READ_EXTERNAL_STORAGE"
+            "android.permission.WRITE_EXTERNAL_STORAGE"
+          )
+          for perm in "${PERMS[@]}"; do
+            if ! grep -q "$perm" "$MANIFEST"; then
+              sed -i "s|<application|<uses-permission android:name=\\"$perm\\"/>\\n    <application|" "$MANIFEST"
+            fi
+          done
+
+          if ! grep -q "android.intent.action.SEND" "$MANIFEST"; then
+            sed -i 's|</activity>|    <intent-filter>\\n                <action android:name="android.intent.action.SEND" />\\n                <category android:name="android.intent.category.DEFAULT" />\\n                <data android:mimeType="text/plain" />\\n            </intent-filter>\\n            <intent-filter>\\n                <action android:name="android.intent.action.SEND" />\\n                <category android:name="android.intent.category.DEFAULT" />\\n                <data android:mimeType="image/*" />\\n            </intent-filter>\\n        </activity>\\n        <service android:name=".AIQuickTileService" android:label="AI Voice / OCR" android:icon="@mipmap/ic_launcher" android:permission="android.permission.BIND_QUICK_SETTINGS_TILE" android:exported="true">\\n            <intent-filter>\\n                <action android:name="android.service.quicksettings.action.QS_TILE" />\\n            </intent-filter>\\n        </service>\\n        <service android:name=".FloatingBubbleService" android:exported="false" />\\n        <receiver android:name=".AIHomeWidgetProvider" android:exported="true">\\n            <intent-filter>\\n                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />\\n            </intent-filter>\\n            <meta-data android:name="android.appwidget.provider" android:resource="@xml/ai_widget_info" />\\n        </receiver>|' "$MANIFEST"
+          fi
+
+          mkdir -p android/app/src/main/res/xml
+          mkdir -p android/app/src/main/res/layout
+
+          cat << 'EOF' > android/app/src/main/res/xml/ai_widget_info.xml
+<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="180dp"
+    android:minHeight="50dp"
+    android:updatePeriodMillis="86400000"
+    android:initialLayout="@layout/ai_widget_layout"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen" />
+EOF
+
+          cat << 'EOF' > android/app/src/main/res/layout/ai_widget_layout.xml
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="horizontal"
+    android:gravity="center"
+    android:padding="10dp"
+    android:background="#1E242B">
+
+    <TextView
+        android:id="@+id/widget_btn_voice"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:text="🎙️ AI Voice"
+        android:textColor="#00E5FF"
+        android:textStyle="bold"
+        android:textSize="14sp" />
+
+    <TextView
+        android:id="@+id/widget_btn_ocr"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:text="📷 AI OCR"
+        android:textColor="#FFFFFF"
+        android:textStyle="bold"
+        android:textSize="14sp" />
+</LinearLayout>
+EOF
+
+          if [ -f "android/app/build.gradle" ]; then
+            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/g' android/app/build.gradle
+            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' android/app/build.gradle
+          fi
+          if [ -f "android/app/build.gradle.kts" ]; then
+            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/g' android/app/build.gradle.kts
+          fi
+
+          MAIN_ACT=$(find android/app/src/main/kotlin -name "MainActivity.kt" | head -n 1)
+          if [ -n "$MAIN_ACT" ]; then
+            PKG_LINE=$(head -n 1 "$MAIN_ACT")
+
+            cat << 'EOF' > "$MAIN_ACT"
+__PKG_LINE__
+
+import android.app.PendingIntent
+import android.appwidget.AppWidgetManager
+import android.appwidget.AppWidgetProvider
+import android.content.Context
+import android.content.Intent
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.provider.Settings
+import android.service.quicksettings.TileService
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.WindowManager
+import android.widget.RemoteViews
+import android.widget.TextView
+import android.app.Service
+import android.os.IBinder
+import io.flutter.embedding.android.FlutterFragmentActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
+import java.io.File
+import java.io.FileOutputStream
+
+class MainActivity : FlutterFragmentActivity() {
+    private val CHANNEL = "com.aihub.client/native"
+    private var launchPayload: Map<String, String>? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        handleIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        val quickAction = intent?.getStringExtra("quick_action")
+        if (!quickAction.isNullOrEmpty()) {
+            launchPayload = mapOf("type" to "quick_action", "value" to quickAction)
+            return
+        }
+        if (intent?.action == Intent.ACTION_SEND) {
+            val type = intent.type ?: return
+            if (type == "text/plain") {
+                val text = intent.getStringExtra(Intent.EXTRA_TEXT)
+                if (!text.isNullOrEmpty()) {
+                    launchPayload = mapOf("type" to "text", "value" to text)
+                }
+            } else if (type.startsWith("image/")) {
+                val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                if (uri != null) {
+                    val copiedPath = copyUriToCache(uri)
+                    if (copiedPath != null) {
+                        launchPayload = mapOf("type" to "image", "value" to copiedPath)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun copyUriToCache(uri: Uri): String? {
+        return try {
+            val input = contentResolver.openInputStream(uri) ?: return null
+            val outFile = File(cacheDir, "shared_${System.currentTimeMillis()}.jpg")
+            val output = FileOutputStream(outFile)
+            input.copyTo(output)
+            input.close()
+            output.close()
+            outFile.absolutePath
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getLaunchPayload" -> {
+                    result.success(launchPayload)
+                    launchPayload = null
+                }
+                "startFloatingBubble" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+                        val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+                        startActivity(intent)
+                        result.success(false)
+                    } else {
+                        startService(Intent(this, FloatingBubbleService::class.java))
+                        result.success(true)
+                    }
+                }
+                "stopFloatingBubble" -> {
+                    stopService(Intent(this, FloatingBubbleService::class.java))
+                    result.success(true)
+                }
+                else -> result.notImplemented()
+            }
+        }
+    }
+}
+
+class AIQuickTileService : TileService() {
+    override fun onClick() {
+        super.onClick()
+        val intent = Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra("quick_action", "voice")
+        }
+        startActivityAndCollapse(intent)
+    }
+}
+
+class AIHomeWidgetProvider : AppWidgetProvider() {
+    override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
+        for (appWidgetId in appWidgetIds) {
+            val views = RemoteViews(context.packageName, R.layout.ai_widget_layout)
+
+            val voiceIntent = Intent(context, MainActivity::class.java).apply {
+                putExtra("quick_action", "voice")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val voicePending = PendingIntent.getActivity(
+                context, 101, voiceIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            views.setOnClickPendingIntent(R.id.widget_btn_voice, voicePending)
+
+            val ocrIntent = Intent(context, MainActivity::class.java).apply {
+                putExtra("quick_action", "ocr")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val ocrPending = PendingIntent.getActivity(
+                context, 102, ocrIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            views.setOnClickPendingIntent(R.id.widget_btn_ocr, ocrPending)
+
+            appWidgetManager.updateAppWidget(appWidgetId, views)
+        }
+    }
+}
+
+class FloatingBubbleService : Service() {
+    private var windowManager: WindowManager? = null
+    private var bubbleView: TextView? = null
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        bubbleView = TextView(this).apply {
+            text = "🤖"
+            textSize = 24f
+            gravity = Gravity.CENTER
+            setBackgroundColor(Color.parseColor("#CC00838F"))
+            setPadding(24, 18, 24, 18)
+        }
+
+        val layoutType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        else
+            WindowManager.LayoutParams.TYPE_PHONE
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            layoutType,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 40
+            y = 300
+        }
+
+        var initialX = 0
+        var initialY = 0
+        var initialTouchX = 0f
+        var initialTouchY = 0f
+
+        bubbleView?.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    initialX = params.x
+                    initialY = params.y
+                    initialTouchX = event.rawX
+                    initialTouchY = event.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    params.x = initialX + (event.rawX - initialTouchX).toInt()
+                    params.y = initialY + (event.rawY - initialTouchY).toInt()
+                    windowManager?.updateViewLayout(bubbleView, params)
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    val dx = Math.abs(event.rawX - initialTouchX)
+                    val dy = Math.abs(event.rawY - initialTouchY)
+                    if (dx < 12 && dy < 12) {
+                        val launchIntent = Intent(this, MainActivity::class.java).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                            putExtra("quick_action", "voice")
+                        }
+                        startActivity(launchIntent)
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+
+        windowManager?.addView(bubbleView, params)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (bubbleView != null) {
+            windowManager?.removeView(bubbleView)
+        }
+    }
+}
+EOF
+            sed -i "s|__PKG_LINE__|$PKG_LINE|g" "$MAIN_ACT"
+          fi
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build Release APK
+        run: flutter build apk --release
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-Studio-Ultimate-v4-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
